@@ -28,12 +28,6 @@ static volatile uint16_t samples[ADC_CHANNELS];
 #define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE    80  // millivolts
 #define ADC_LOGIC_HIGH_MAXIMUM_DIFFERENCE   20  // millivolts
 
-#if 0 // enable for writer
-#define WRITER_CLOCK_RESOLUTION     1000000
-#define WRITER_CLOCK_FREQUENCY      TM4C1294_CLOCK_FREQUENCY_SYSTEM
-#define WRITER_USEC_TO_COUNT(usec)    (uint32_t)(((float)WRITER_CLOCK_FREQUENCY / WRITER_CLOCK_RESOLUTION) * usec + 0.5)
-#endif
-
 #define start_sampling() { \
     ADC10CTL0 &= ~ENC; \
     while (ADC10CTL1 & BUSY); \
@@ -94,8 +88,8 @@ static void configure_hardware(void)
     /* Configure the hardware */
     WDTCTL = WDTPW + WDTHOLD;   // Stop WDT
     //DCOCTL = 0;                 // Select lowest DCOx and MODx settings
-    BCSCTL1 = CALBC1_1MHZ;      // Set range // Set DC0
-    DCOCTL = CALDCO_1MHZ;
+    BCSCTL1 = CALBC1_16MHZ;      // Set range // Set DC0
+    DCOCTL = CALDCO_16MHZ;
     BCSCTL2 &= ~(DIVS_3);       // SMCLK = DCO = 1MHz // from ADC
     P2DIR |= 0xFF;              // All P2.x outputs
     P2OUT &= 0x00;              // All P2.x reset
@@ -108,9 +102,9 @@ static void configure_hardware(void)
     P1DIR |= RXLED + TXLED;
     P1OUT &= 0x00;
     UCA0CTL1 |= UCSSEL_2;       // SMCLK
-    UCA0BR0 = 0x08;             // 1MHz 115200
-    UCA0BR1 = 0x00;             // 1MHz 115200
-    UCA0MCTL = UCBRS2 + UCBRS0; // Modulation UCBRSx = 5
+    UCA0BR0 = 0x8A;             // 16MHz 115200
+    UCA0BR1 = 0x00;             // 16MHz 115200
+    UCA0MCTL = 7 << 3;          // Modulation UCBRSx = 7
     UCA0CTL1 &= ~UCSWRST;       // Initialize USCI state machine
 
     enableRx();
@@ -118,9 +112,9 @@ static void configure_hardware(void)
 
 // bits buffer
 #define BITS_BUFFER_SIZE     64
-static uint8_t bits_buffer[BITS_BUFFER_SIZE];
+static uint16_t bits_buffer[BITS_BUFFER_SIZE];
 static volatile uint8_t bits_buffer_end_index = BITS_BUFFER_SIZE - 1;
-static volatile uint8_t bits_buffer_end_mask = 0;
+static volatile uint16_t bits_buffer_end_mask = 0;
 static volatile uint8_t bits_buffer_end_count = 0;
 static volatile uint8_t bits_buffer_start_index = BITS_BUFFER_SIZE - 1;
 static volatile uint8_t bits_buffer_start_shift = 32;
@@ -128,10 +122,12 @@ static volatile uint8_t bits_buffer_start_count = 0;
 static volatile bool bits_buffer_not_full = true;
 
 #define BUS_IDLE_HIGH_COUNT 40//100
-#define BUS_START_BIT_MINIMUM_LOW_COUNT      32//80
+#define BUS_START_BIT_MINIMUM_LOW_COUNT      8//80
 #define BUS_LOGIC_BIT_MINIMUM_LOW_COUNT      2//5
-#define BUS_LOGIC_HIGH_MAXIMUM_LOW_COUNT     6//15
+#define BUS_LOGIC_HIGH_MAXIMUM_LOW_COUNT     5//15
 static volatile bool bus_is_busy = true;
+
+//#define OUTPUT_BYTE
 
 static void read_adc()
 {
@@ -141,6 +137,8 @@ static void read_adc()
     static volatile bool is_high = false;
     static volatile bool not_frame = true;
     static uint16_t sample_count = 0;
+    static uint8_t readerBitsBufferStartShift = 16;
+    static bool process = false;
 
     // get the voltage difference in mV
 #define volt_diff (ADC_VALUE_TO_MILLIVOLTS(samples[0]))
@@ -151,8 +149,12 @@ static void read_adc()
     //output16(ADC_VALUE_TO_MILLIVOLTS(samples[BUS_MINUS]));
     //output16(samples[0]);
 #if 1
-    if(volt_diff > ADC_LOGIC_LOW_MINIMUM_DIFFERENCE)
+    if(volt_diff > ADC_LOGIC_LOW_MINIMUM_DIFFERENCE) // logic low
     {
+#ifdef OUTPUT_BYTE
+#else
+        output(0);
+#endif
         if(is_high)
         {
             //output('H');
@@ -160,7 +162,7 @@ static void read_adc()
             sample_count++;
             if(sample_count == BUS_IDLE_HIGH_COUNT)
             {
-                output('-');
+                //output('-');
                 bus_is_busy = false;
                 not_frame = true;
             }
@@ -219,6 +221,10 @@ static void read_adc()
     else
     {
         //output(1);
+#ifdef OUTPUT_BYTE
+#else
+        output(1);
+#endif
         bus_is_busy = true;
 
         if(is_high)
