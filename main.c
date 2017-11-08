@@ -211,6 +211,14 @@ static void read_adc()
                 }
 
                 bits_buffer_end_mask <<=2;
+#if 1 //jake
+                if(bits_buffer_end_mask == 0)
+                {
+#ifdef OUTPUT_BYTE
+#else
+#endif
+                }
+#endif
                 ++bits_buffer_end_count;
                 break;
             }
@@ -220,7 +228,6 @@ static void read_adc()
     }
     else
     {
-        //output(1);
 #ifdef OUTPUT_BYTE
 #else
         output(1);
@@ -245,6 +252,7 @@ static void transmit_bits_buffer()
 {
     do
     {
+#if 0
         if(bits_buffer_start_index != bits_buffer_end_index)
         {
             output('[');
@@ -255,6 +263,7 @@ static void transmit_bits_buffer()
             }
         }
 
+#endif
     } while(0);
 }
 
