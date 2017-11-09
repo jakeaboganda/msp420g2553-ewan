@@ -14,7 +14,7 @@
 #define disableRx() {UC0IE &= ~UCA0RXIE;}
 
 //static volatile uint8_t value = 0;
-#define ADC_CHANNELS 2
+#define ADC_CHANNELS 1
 static volatile uint16_t samples[ADC_CHANNELS];
 
 // maximum values
@@ -76,8 +76,16 @@ static void configure_adc(void)
    /* Configure ADC Channel */
    while (ADC10CTL1 & BUSY);
 
-   ADC10CTL1 = INCH_4 + ADC10DIV_3 + CONSEQ_3 + SHS_0;
-   ADC10CTL0 = SREF_0 + ADC10SHT_2 + MSC + ADC10ON + ADC10IE;
+   ADC10CTL1 = INCH_8/*4*/      // VeREF+ is the source
+           + ADC10DIV_3         // ADC Clock divider = 3
+           + ADC10SSEL_0/*2*/   // Select the ADC10OSC as the source clock
+           + CONSEQ_3           // Repeat sequence of channels
+           + SHS_0;             // Sample and hold source is ADC10SC
+   ADC10CTL0 = SREF_4/*5*/      // VR+ = VCC and VR- = VREF-/ VeREF-
+           + ADC10SHT_0/*2*/    // Use four ADC10CLKs
+           + MSC                // First rising edge triggers sampling timer, succeeding conversions are done automatically
+           + ADC10ON            // Enable ADC10
+           + ADC10IE;           // Interrupt enable
    ADC10AE0 = BIT3 + BIT4; // http://www.ti.com/lit/ds/symlink/msp430g2553.pdf ; page 45
    ADC10DTC1 = ADC_CHANNELS;
 }
@@ -141,8 +149,8 @@ static void read_adc()
 #define BUS_PLUS 0
 #define BUS_MINUS 1
 
-    output16(ADC_VALUE_TO_MILLIVOLTS(samples[BUS_PLUS]));
-    output16(ADC_VALUE_TO_MILLIVOLTS(samples[BUS_MINUS]));
+    output16(ADC_VALUE_TO_MILLIVOLTS(samples[0]));
+    //output16(ADC_VALUE_TO_MILLIVOLTS(samples[BUS_MINUS]));
     //output16(volt_diff);
 #if 0
     if(volt_diff > ADC_LOGIC_LOW_MINIMUM_DIFFERENCE)
