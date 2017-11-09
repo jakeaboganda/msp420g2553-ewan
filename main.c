@@ -25,7 +25,7 @@ static volatile uint16_t samples[ADC_CHANNELS];
 // convert to millivolts
 #define ADC_MILLIVOLT_MAX ((uint16_t)3500)
 #define ADC_VALUE_TO_MILLIVOLTS(adc_value) (uint16_t)(ADC_MILLIVOLT_MAX / ADC_MAX * (((float)(adc_value))))
-#define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE    80  // millivolts
+#define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE    120  // millivolts
 #define ADC_LOGIC_HIGH_MAXIMUM_DIFFERENCE   20  // millivolts
 
 #define start_sampling() { \
@@ -119,20 +119,43 @@ static void configure_hardware(void)
 
 // bits buffer
 #define BITS_BUFFER_SIZE     64
-static uint8_t bits_buffer[BITS_BUFFER_SIZE];
+static uint16_t bits_buffer[BITS_BUFFER_SIZE];
 static volatile uint8_t bits_buffer_end_index = BITS_BUFFER_SIZE - 1;
-static volatile uint8_t bits_buffer_end_mask = 0;
+static volatile uint16_t bits_buffer_end_mask = 0;
 static volatile uint8_t bits_buffer_end_count = 0;
 static volatile uint8_t bits_buffer_start_index = BITS_BUFFER_SIZE - 1;
 static volatile uint8_t bits_buffer_start_shift = 32;
 static volatile uint8_t bits_buffer_start_count = 0;
 static volatile bool bits_buffer_not_full = true;
 
-#define BUS_IDLE_HIGH_COUNT 60//100
-#define BUS_START_BIT_MINIMUM_LOW_COUNT      40//80
-#define BUS_LOGIC_BIT_MINIMUM_LOW_COUNT      2//5
-#define BUS_LOGIC_HIGH_MAXIMUM_LOW_COUNT     5//15
+#define BUS_IDLE_HIGH_COUNT 100//100
+#define BUS_START_BIT_MINIMUM_LOW_COUNT      100//80
+#define BUS_LOGIC_BIT_MINIMUM_LOW_COUNT      5//5
+#define BUS_LOGIC_HIGH_MAXIMUM_LOW_COUNT     15//15
 static volatile bool bus_is_busy = true;
+
+static uint8_t readerBitsBufferStartShift = 16;
+
+static void analyze_bits_buffer()
+{
+    if(bits_buffer_end_mask == 0)
+    {
+        while(bits_buffer_start_index != bits_buffer_end_index)
+        {
+#ifdef OUTPUT_BYTE
+            output('[');
+            output(bits_buffer[bits_buffer_start_index]);
+#else
+            //output('[');
+            output16(bits_buffer[bits_buffer_start_index]);
+#endif
+            if(++bits_buffer_start_index == BITS_BUFFER_SIZE)
+            {
+                bits_buffer_start_index = 0;
+            }
+        }
+    }
+}
 
 static void read_adc()
 {
@@ -142,7 +165,6 @@ static void read_adc()
     static volatile bool is_high = false;
     static volatile bool not_frame = true;
     static uint16_t sample_count = 0;
-    static uint8_t readerBitsBufferStartShift = 16;
     //static bool process = false;
 
     //output('-');
@@ -185,7 +207,8 @@ static void read_adc()
                         // overrun
                         bits_buffer_not_full = false;
                         not_frame = true;
-                        //output('v');
+                        output('!');
+                        output('!');
                         break;
                     }
 
@@ -215,24 +238,11 @@ static void read_adc()
 
                 bits_buffer_end_mask <<=2;
                 ++bits_buffer_end_count;
-                //output(bits_buffer_end_mask);
                 if(bits_buffer_end_mask == 0)
                 {
-                    while(bits_buffer_start_index != bits_buffer_end_index)
-                    {
-#ifdef OUTPUT_BYTE
-                        output('[');
-                        output(bits_buffer[bits_buffer_start_index]);
-#else
-                        output('[');
-                        output(bits_buffer[bits_buffer_start_index]);
-#endif
-                        if(++bits_buffer_start_index == BITS_BUFFER_SIZE)
-                        {
-                            bits_buffer_start_index = 0;
-                        }
-                    }
+                    analyze_bits_buffer();
                 }
+                //output(bits_buffer_end_mask);
                 break;
             }
 
@@ -260,38 +270,6 @@ static void read_adc()
 #endif
 }
 
-static void transmit_bits_buffer()
-{
-    if(bits_buffer_start_index != bits_buffer_end_index)
-    {
-        output(bits_buffer[bits_buffer_start_index]);
-        if(++bits_buffer_start_index == BITS_BUFFER_SIZE)
-        {
-            bits_buffer_start_index = 0;
-        }
-#if 0
-        if(bits_buffer_end_count != bits_buffer_start_count)
-        {
-            if(bits_buffer_start_shift < 30)
-            {
-                bits_buffer_start_shift += 2;
-            }
-            else
-            {
-                bits_buffer_start_shift = 0;
-
-                if(++bits_buffer_start_index == BITS_BUFFER_SIZE)
-                {
-                    bits_buffer_start_index = 0;
-                }
-            }
-
-            output(bits_buffer[bits_buffer_start_index]);
-        }
-#endif
-    }
-}
-
 int main(void)
 {
     configure_hardware();
@@ -304,7 +282,6 @@ int main(void)
        //
        __delay_cycles(1000); // Wait for ADC Ref to settle
        read_adc();
-       //transmit_bits_buffer();
        transmit_to_uart();
    }
 }
