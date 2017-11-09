@@ -14,7 +14,7 @@
 #define disableRx() {UC0IE &= ~UCA0RXIE;}
 
 //static volatile uint8_t value = 0;
-#define ADC_CHANNELS 1
+#define ADC_CHANNELS 2
 static volatile uint16_t samples[ADC_CHANNELS];
 
 // maximum values
@@ -76,10 +76,9 @@ static void configure_adc(void)
    /* Configure ADC Channel */
    while (ADC10CTL1 & BUSY);
 
-   ADC10CTL1 = INCH_4 + ADC10DIV_3 + ADC10SSEL_0 + CONSEQ_3 + SHS_0; // Multi-channel repeated conversion starting from channel 4
-   ADC10CTL0 = SREF_5 + ADC10SHT_2 + MSC + ADC10ON + ADC10IE;
+   ADC10CTL1 = INCH_4 + ADC10DIV_3 + CONSEQ_3 + SHS_0;
+   ADC10CTL0 = SREF_0 + ADC10SHT_2 + MSC + ADC10ON + ADC10IE;
    ADC10AE0 = BIT3 + BIT4; // http://www.ti.com/lit/ds/symlink/msp430g2553.pdf ; page 45
-   CAPD &= ~(BIT3 + BIT4); // http://www.ti.com/lit/ds/symlink/msp430g2553.pdf ; page 45
    ADC10DTC1 = ADC_CHANNELS;
 }
 
@@ -96,7 +95,7 @@ static void configure_hardware(void)
     P3DIR |= 0xFF;              // All P3.x outputs
     P3OUT &= 0x00;              // All P3.x reset
     P1SEL |= RXD + TXD ;        // P1.1 = RXD, P1.2=TXD
-    ///P1SEL |= BIT3 + BIT4;       // ADC Input pin P1.3 = VREF-, P1.4 = VREF+ //Refer to: http://www.ti.com/lit/ds/symlink/msp430g2553.pdf page45
+    //P1SEL |= BIT3 + BIT4;       // ADC Input pin P1.3 = VREF-, P1.4 = VREF+ //Refer to: http://www.ti.com/lit/ds/symlink/msp430g2553.pdf page45
     P1SEL2 |= RXD + TXD ;       // P1.1 = RXD, P1.2=TXD
     //P1SEL2 |= BIT3 + BIT4;      // ADC Input pin P1.3 = VREF-, P1.4 = VREF+ //Refer to: http://www.ti.com/lit/ds/symlink/msp430g2553.pdf page45
     P1DIR |= RXLED + TXLED;
@@ -112,22 +111,20 @@ static void configure_hardware(void)
 
 // bits buffer
 #define BITS_BUFFER_SIZE     64
-static uint16_t bits_buffer[BITS_BUFFER_SIZE];
+static uint8_t bits_buffer[BITS_BUFFER_SIZE];
 static volatile uint8_t bits_buffer_end_index = BITS_BUFFER_SIZE - 1;
-static volatile uint16_t bits_buffer_end_mask = 0;
+static volatile uint8_t bits_buffer_end_mask = 0;
 static volatile uint8_t bits_buffer_end_count = 0;
 static volatile uint8_t bits_buffer_start_index = BITS_BUFFER_SIZE - 1;
 static volatile uint8_t bits_buffer_start_shift = 32;
 static volatile uint8_t bits_buffer_start_count = 0;
 static volatile bool bits_buffer_not_full = true;
 
-#define BUS_IDLE_HIGH_COUNT 40//100
-#define BUS_START_BIT_MINIMUM_LOW_COUNT      8//80
+#define BUS_IDLE_HIGH_COUNT 60//100
+#define BUS_START_BIT_MINIMUM_LOW_COUNT      40//80
 #define BUS_LOGIC_BIT_MINIMUM_LOW_COUNT      2//5
 #define BUS_LOGIC_HIGH_MAXIMUM_LOW_COUNT     5//15
 static volatile bool bus_is_busy = true;
-
-//#define OUTPUT_BYTE
 
 static void read_adc()
 {
@@ -138,33 +135,29 @@ static void read_adc()
     static volatile bool not_frame = true;
     static uint16_t sample_count = 0;
     static uint8_t readerBitsBufferStartShift = 16;
-    static bool process = false;
+    //static bool process = false;
 
-    // get the voltage difference in mV
-#define volt_diff (ADC_VALUE_TO_MILLIVOLTS(samples[0]))
+    output('-');
+#define BUS_PLUS 0
+#define BUS_MINUS 1
 
-    //output('-');
-    //output16(samples[0]);
-    //output16(ADC_VALUE_TO_MILLIVOLTS(samples[BUS_PLUS]));
-    //output16(ADC_VALUE_TO_MILLIVOLTS(samples[BUS_MINUS]));
-    //output16(samples[0]);
-#if 1
-    if(volt_diff > ADC_LOGIC_LOW_MINIMUM_DIFFERENCE) // logic low
+    output16(ADC_VALUE_TO_MILLIVOLTS(samples[BUS_PLUS]));
+    output16(ADC_VALUE_TO_MILLIVOLTS(samples[BUS_MINUS]));
+    //output16(volt_diff);
+#if 0
+    if(volt_diff > ADC_LOGIC_LOW_MINIMUM_DIFFERENCE)
     {
-#ifdef OUTPUT_BYTE
-#else
-        output(0);
-#endif
+        //output(0);
         if(is_high)
         {
-            //output('H');
-            //output(sample_count);
             sample_count++;
             if(sample_count == BUS_IDLE_HIGH_COUNT)
             {
-                //output('-');
                 bus_is_busy = false;
                 not_frame = true;
+#if 1//jake
+                bits_buffer_start_index = bits_buffer_end_index = 0;
+#endif
             }
         }
         else
@@ -184,6 +177,7 @@ static void read_adc()
                         // overrun
                         bits_buffer_not_full = false;
                         not_frame = true;
+                        //output('v');
                         break;
                     }
 
@@ -196,6 +190,7 @@ static void read_adc()
                     //received++
                     bits_buffer[bits_buffer_end_index] |= (bits_buffer_end_mask << 1);
                     not_frame = false;
+                    //output('@');
                 }
                 else if(not_frame)
                 {
@@ -211,15 +206,24 @@ static void read_adc()
                 }
 
                 bits_buffer_end_mask <<=2;
-#if 1 //jake
+                ++bits_buffer_end_count;
+                //output(bits_buffer_end_mask);
                 if(bits_buffer_end_mask == 0)
                 {
+                    while(bits_buffer_start_index != bits_buffer_end_index)
+                    {
 #ifdef OUTPUT_BYTE
+                        output('[');
+                        output(bits_buffer[bits_buffer_start_index]);
 #else
+                        //output(bits_buffer[bits_buffer_start_index]);
 #endif
+                        if(++bits_buffer_start_index == BITS_BUFFER_SIZE)
+                        {
+                            bits_buffer_start_index = 0;
+                        }
+                    }
                 }
-#endif
-                ++bits_buffer_end_count;
                 break;
             }
 
@@ -230,7 +234,7 @@ static void read_adc()
     {
 #ifdef OUTPUT_BYTE
 #else
-        output(1);
+        //output(1);
 #endif
         bus_is_busy = true;
 
@@ -247,24 +251,36 @@ static void read_adc()
 #endif
 }
 
-
 static void transmit_bits_buffer()
 {
-    do
+    if(bits_buffer_start_index != bits_buffer_end_index)
     {
-#if 0
-        if(bits_buffer_start_index != bits_buffer_end_index)
+        output(bits_buffer[bits_buffer_start_index]);
+        if(++bits_buffer_start_index == BITS_BUFFER_SIZE)
         {
-            output('[');
-            output(bits_buffer[bits_buffer_start_index]);
-            if(++bits_buffer_start_index == BITS_BUFFER_SIZE)
-            {
-                bits_buffer_start_index = 0;
-            }
+            bits_buffer_start_index = 0;
         }
+#if 0
+        if(bits_buffer_end_count != bits_buffer_start_count)
+        {
+            if(bits_buffer_start_shift < 30)
+            {
+                bits_buffer_start_shift += 2;
+            }
+            else
+            {
+                bits_buffer_start_shift = 0;
 
+                if(++bits_buffer_start_index == BITS_BUFFER_SIZE)
+                {
+                    bits_buffer_start_index = 0;
+                }
+            }
+
+            output(bits_buffer[bits_buffer_start_index]);
+        }
 #endif
-    } while(0);
+    }
 }
 
 int main(void)
