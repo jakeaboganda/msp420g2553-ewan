@@ -14,7 +14,7 @@
 #define disableRx() {UC0IE &= ~UCA0RXIE;}
 
 //static volatile uint8_t value = 0;
-#define ADC_CHANNELS 1
+#define ADC_CHANNELS 2
 static volatile uint16_t samples[ADC_CHANNELS];
 
 // maximum values
@@ -24,7 +24,7 @@ static volatile uint16_t samples[ADC_CHANNELS];
 
 // convert to millivolts
 #define ADC_MILLIVOLT_MAX ((uint16_t)3500)
-#define ADC_VALUE_TO_MILLIVOLTS(adc_value) (uint16_t)(ADC_MILLIVOLT_MAX * (((float)(adc_value)) / ADC_MAX))
+#define ADC_VALUE_TO_MILLIVOLTS(adc_value) (uint16_t)(ADC_MILLIVOLT_MAX / ADC_MAX * (((float)(adc_value))))
 #define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE    80  // millivolts
 #define ADC_LOGIC_HIGH_MAXIMUM_DIFFERENCE   20  // millivolts
 
@@ -76,12 +76,12 @@ static void configure_adc(void)
    /* Configure ADC Channel */
    while (ADC10CTL1 & BUSY);
 
-   ADC10CTL1 = INCH_8/*4*/      // VeREF+ is the source
+   ADC10CTL1 = INCH_4/*4*/      // BIT 3 and BIT4
            + ADC10DIV_3         // ADC Clock divider = 3
            + ADC10SSEL_0/*2*/   // Select the ADC10OSC as the source clock
            + CONSEQ_3           // Repeat sequence of channels
            + SHS_0;             // Sample and hold source is ADC10SC
-   ADC10CTL0 = SREF_4/*5*/      // VR+ = VCC and VR- = VREF-/ VeREF-
+   ADC10CTL0 = SREF_0/*5*/      // VR+ = VCC and VR- = VSS
            + ADC10SHT_0/*2*/    // Use four ADC10CLKs
            + MSC                // First rising edge triggers sampling timer, succeeding conversions are done automatically
            + ADC10ON            // Enable ADC10
@@ -145,17 +145,16 @@ static void read_adc()
     static uint8_t readerBitsBufferStartShift = 16;
     //static bool process = false;
 
-    output('-');
-#define BUS_PLUS 0
-#define BUS_MINUS 1
-
-    output16(ADC_VALUE_TO_MILLIVOLTS(samples[0]));
-    //output16(ADC_VALUE_TO_MILLIVOLTS(samples[BUS_MINUS]));
+    //output('-');
+#define BUS_PLUS (ADC_VALUE_TO_MILLIVOLTS(samples[0]))
+#define BUS_MINUS (ADC_VALUE_TO_MILLIVOLTS(samples[1]))
+#define volt_diff ((BUS_PLUS > BUS_MINUS) ? BUS_PLUS - BUS_MINUS : BUS_MINUS - BUS_PLUS)
+    //output16(ADC_VALUE_TO_MILLIVOLTS(samples[0]));
     //output16(volt_diff);
-#if 0
+#if 1
     if(volt_diff > ADC_LOGIC_LOW_MINIMUM_DIFFERENCE)
     {
-        //output(0);
+        //output(0); //logic "0"
         if(is_high)
         {
             sample_count++;
@@ -163,6 +162,7 @@ static void read_adc()
             {
                 bus_is_busy = false;
                 not_frame = true;
+                output('-');
 #if 1//jake
                 bits_buffer_start_index = bits_buffer_end_index = 0;
 #endif
@@ -224,7 +224,8 @@ static void read_adc()
                         output('[');
                         output(bits_buffer[bits_buffer_start_index]);
 #else
-                        //output(bits_buffer[bits_buffer_start_index]);
+                        output('[');
+                        output(bits_buffer[bits_buffer_start_index]);
 #endif
                         if(++bits_buffer_start_index == BITS_BUFFER_SIZE)
                         {
@@ -242,7 +243,7 @@ static void read_adc()
     {
 #ifdef OUTPUT_BYTE
 #else
-        //output(1);
+        //output(1); //logic "1"
 #endif
         bus_is_busy = true;
 
@@ -303,7 +304,7 @@ int main(void)
        //
        __delay_cycles(1000); // Wait for ADC Ref to settle
        read_adc();
-       transmit_bits_buffer();
+       //transmit_bits_buffer();
        transmit_to_uart();
    }
 }
