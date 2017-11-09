@@ -77,7 +77,7 @@ static void configure_adc(void)
    while (ADC10CTL1 & BUSY);
 
    ADC10CTL1 = INCH_4/*4*/      // BIT 3 and BIT4
-           + ADC10DIV_3         // ADC Clock divider = 3
+           + ADC10DIV_0         // ADC Clock divider = 1
            + ADC10SSEL_0/*2*/   // Select the ADC10OSC as the source clock
            + CONSEQ_3           // Repeat sequence of channels
            + SHS_0;             // Sample and hold source is ADC10SC
@@ -118,13 +118,13 @@ static void configure_hardware(void)
 }
 
 // bits buffer
-#define BITS_BUFFER_SIZE     64
+#define BITS_BUFFER_SIZE     32
 static uint16_t bits_buffer[BITS_BUFFER_SIZE];
 static volatile uint8_t bits_buffer_end_index = BITS_BUFFER_SIZE - 1;
 static volatile uint16_t bits_buffer_end_mask = 0;
 static volatile uint8_t bits_buffer_end_count = 0;
 static volatile uint8_t bits_buffer_start_index = BITS_BUFFER_SIZE - 1;
-static volatile uint8_t bits_buffer_start_shift = 32;
+static volatile uint8_t bits_buffer_start_shift = 16;
 static volatile uint8_t bits_buffer_start_count = 0;
 static volatile bool bits_buffer_not_full = true;
 
@@ -134,10 +134,300 @@ static volatile bool bits_buffer_not_full = true;
 #define BUS_LOGIC_HIGH_MAXIMUM_LOW_COUNT     15//15
 static volatile bool bus_is_busy = true;
 
-static uint8_t readerBitsBufferStartShift = 16;
 
+
+// maximum length of data field in bytes
+#define IEBUS_FRAME_MESSAGE_LENGTH_FIELD_MAXIMUM_VALUE      256
+#define IEBUS_FRAME_DATA_FIELD_MAXIMUM_LENGTH               32 // Mode 1
+
+
+enum {
+    IEBUS_BIT_LOGIC_LOW,
+    IEBUS_BIT_LOGIC_HIGH,
+    IEBUS_BIT_START
+};
+
+// frame buffer
+typedef struct {
+    uint8_t valid;
+    uint8_t notBroadcast;
+    uint8_t masterAddress[2];
+    uint8_t slaveAddress[2];
+    uint8_t control;
+    uint8_t dataLength;
+    uint8_t data[IEBUS_FRAME_DATA_FIELD_MAXIMUM_LENGTH];
+} READER_FRAME_BUFFER;
+
+enum {
+    READER_FRAME_BUFFER_INDEX_BROADCAST_BIT,
+    READER_FRAME_BUFFER_INDEX_MASTER_ADDRESS_MSB,
+    READER_FRAME_BUFFER_INDEX_MASTER_ADDRESS_LSB,
+    READER_FRAME_BUFFER_INDEX_SLAVE_ADDRESS_MSB,
+    READER_FRAME_BUFFER_INDEX_SLAVE_ADDRESS_LSB,
+    READER_FRAME_BUFFER_INDEX_CONTROL,
+    READER_FRAME_BUFFER_INDEX_MESSAGE_LENGTH,
+    READER_FRAME_BUFFER_INDEX_DATA
+};
+
+static READER_FRAME_BUFFER readerFrameBuffer;
+//static const READER_FRAME_BUFFER *lastReaderFrameBuffer = &readerFrameBuffer[READER_FRAME_BUFFER_ITEMS - 1];
+//static READER_FRAME_BUFFER *readerFrameBufferEnd = readerFrameBuffer;
+//static READER_FRAME_BUFFER *readerFrameBufferStart = readerFrameBuffer;
+
+// IEBus address
+typedef int16_t IEBUS_ADDRESS;
+#define INVALID_IEBUS_ADDRESS   (IEBUS_ADDRESS)-1
+
+// IEBus control
+enum {
+    IEBUS_CONTROL_SLAVE_STATUS_READ             = 0x0,  // reads slave status (SSR)
+    IEBUS_CONTROL_DATA_READ_AND_LOCK            = 0x3,  // reads and locks data
+    IEBUS_CONTROL_LOCK_LSB_ADDRESS_READ         = 0x4,  // reads lock address (lower 8 bits)
+    IEBUS_CONTROL_LOCK_MSB_ADDRESS_READ         = 0x5,  // reads lock address (higher 4 bits)
+    IEBUS_CONTROL_SLAVE_STATUS_READ_AND_UNLOCK  = 0x6,  // reads and unlocks slave status (SSR)
+    IEBUS_CONTROL_DATA_READ                     = 0x7,  // reads data
+    IEBUS_CONTROL_COMMAND_WRITE_AND_LOCK        = 0xa,  // writes and locks command
+    IEBUS_CONTROL_DATA_WRITE_AND_LOCK           = 0xb,  // writes and locks data
+    IEBUS_CONTROL_COMMAND_WRITE                 = 0xe,  // writes command
+    IEBUS_CONTROL_DATA_WRITE                    = 0xf   // writes data
+}; typedef uint8_t IEBUS_CONTROL;
+
+// IEBus frame
+
+// frame fields
+enum {
+    IEBUS_FRAME_FIELD_BROADCAST_BIT,
+    IEBUS_FRAME_FIELD_MASTER_ADDRESS,
+    IEBUS_FRAME_FIELD_SLAVE_ADDRESS,
+    IEBUS_FRAME_FIELD_CONTROL,
+    IEBUS_FRAME_FIELD_MESSAGE_LENGTH,
+    IEBUS_FRAME_FIELD_DATA
+};
+
+// maximum number of bits in a frame
+#define IEBUS_FRAME_MAXIMUM_NUMBER_OF_BITS          (45 + (10 * IEBUS_FRAME_DATA_FIELD_MAXIMUM_LENGTH))
+
+// number of bits (excluding parity and acknowledge) for each field
+#define IEBUS_FRAME_FIELD_BITS_BROADCAST_BIT        1
+#define IEBUS_FRAME_FIELD_BITS_MASTER_ADDRESS       12
+#define IEBUS_FRAME_FIELD_BITS_SLAVE_ADDRESS        12
+#define IEBUS_FRAME_FIELD_BITS_CONTROL              4
+#define IEBUS_FRAME_FIELD_BITS_MESSAGE_LENGTH       8
+#define IEBUS_FRAME_FIELD_BITS_DATA                 8
+
+// frame field information
+typedef struct {
+    uint8_t id;
+    bool hasParityBit;
+    bool hasAcknowledgeBit;
+    uint8_t dataBits;
+    uint8_t totalBits;
+    bool isTwoBytes;
+    uint16_t bitMask;
+} IEBUS_FRAME_FIELD;
+
+#define IEBUS_FRAME_FIELD_INITIALIZER(id, hasParityBit, hasAcknowledgeBit, numberOfBits) \
+    [id] = { \
+            id, \
+            hasParityBit, \
+            hasAcknowledgeBit, \
+            numberOfBits, \
+            numberOfBits + hasParityBit + hasAcknowledgeBit, \
+            (numberOfBits > 8), \
+            0x1 << (numberOfBits - 1) \
+    }
+
+static const IEBUS_FRAME_FIELD iebus_frame_field[] = {
+        IEBUS_FRAME_FIELD_INITIALIZER(IEBUS_FRAME_FIELD_BROADCAST_BIT, false, false, IEBUS_FRAME_FIELD_BITS_BROADCAST_BIT),
+        IEBUS_FRAME_FIELD_INITIALIZER(IEBUS_FRAME_FIELD_MASTER_ADDRESS, true, false, IEBUS_FRAME_FIELD_BITS_MASTER_ADDRESS),
+        IEBUS_FRAME_FIELD_INITIALIZER(IEBUS_FRAME_FIELD_SLAVE_ADDRESS, true, true, IEBUS_FRAME_FIELD_BITS_SLAVE_ADDRESS),
+        IEBUS_FRAME_FIELD_INITIALIZER(IEBUS_FRAME_FIELD_CONTROL, true, true, IEBUS_FRAME_FIELD_BITS_CONTROL),
+        IEBUS_FRAME_FIELD_INITIALIZER(IEBUS_FRAME_FIELD_MESSAGE_LENGTH, true, true, IEBUS_FRAME_FIELD_BITS_MESSAGE_LENGTH),
+        IEBUS_FRAME_FIELD_INITIALIZER(IEBUS_FRAME_FIELD_DATA, true, true, IEBUS_FRAME_FIELD_BITS_DATA)
+};
+
+void analyze_bits(bool loop)
+{
+#define finishFrame(reason) \
+        { \
+            processing_frame = false; \
+        }
+
+    static bool processing_frame = false; // indicates that a frame is being processed
+    static bool check_acknowledgement; // ordinary (not broadcast) communication should be acknowledged
+    static uint8_t remaining_field_bits; // remaining bits for the current field
+    static const IEBUS_FRAME_FIELD *current_field; // current field information
+    static uint16_t field_bit_mask; // data bit mask for the current field
+    static uint16_t field_data_buffer; // data buffer for the current field
+    static uint16_t frame_high_bit_count; // frame high bit count (excluding the broadcast and acknowledge bits) for parity check
+    static uint16_t remaining_bytes; // number of remaining bytes to receive for the current frame
+    static uint8_t *data;
+
+    do
+    {
+        if(bits_buffer_not_full)
+        {
+            if(bits_buffer_end_count != bits_buffer_start_count)
+            {
+                if(bits_buffer_start_shift < 14)
+                {
+                    bits_buffer_start_shift += 2;
+                }
+                else
+                {
+                    bits_buffer_start_shift = 0;
+
+                    if(++bits_buffer_start_index == BITS_BUFFER_SIZE)
+                    {
+                        bits_buffer_start_index = 0;
+                    }
+                }
+
+                uint8_t bit = (bits_buffer[bits_buffer_start_index] >> bits_buffer_start_shift) & 0x3;
+
+                ++bits_buffer_start_count;
+
+                if(bit == IEBUS_BIT_START)
+                {
+                    // the previous frame didn't finish
+                    if(processing_frame)
+                    {
+                        //output('x');
+                        //output('x');
+                        finishFrame(incomplete);
+                    }
+
+                    // prepare buffer
+                    data = &readerFrameBuffer.notBroadcast;
+
+                    // after the start bit is the broadcast bit
+                    current_field = iebus_frame_field;
+                    remaining_field_bits = current_field->totalBits;
+                    field_bit_mask = current_field->bitMask;
+                    field_data_buffer = 0;
+
+                    // processing_frame the frame
+                    processing_frame = true;
+                }
+                else if(processing_frame)
+                {
+                    output(bit);
+                    // save the bit
+                    if(bit == IEBUS_BIT_LOGIC_HIGH)
+                    {
+                        ++frame_high_bit_count; // track the number of high bits for parity checking later
+                        field_data_buffer |= field_bit_mask;
+                    }
+
+                    field_bit_mask >>= 1;
+
+                    // last bit of field
+                    if(--remaining_field_bits == 0)
+                    {
+                        if(current_field->hasAcknowledgeBit)
+                        {
+                            // ignore frames that are not acknowledged by slave during ordinary communication
+                            if(bit == IEBUS_BIT_LOGIC_HIGH)
+                            {
+                                --frame_high_bit_count;
+
+                                if(check_acknowledgement)
+                                {
+                                    finishFrame(notAcknowledged);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        if(current_field->hasParityBit)
+                        {
+                            // data is invalid if high bit count is odd
+                            if((frame_high_bit_count & 0x1))
+                            {
+                                finishFrame(parityError);
+
+                                continue;
+                            }
+                        }
+
+                        // save the field (up to two bytes)
+                        if(current_field->isTwoBytes)
+                        {
+                            *data = field_data_buffer >> 8; // MSB
+                            ++data;
+                        }
+
+                        *data = field_data_buffer; // LSB
+                        ++data;
+
+                        if(current_field->id == IEBUS_FRAME_FIELD_DATA)
+                        {
+                            // last byte of frame
+                            if(--remaining_bytes == 0)
+                            {
+                                readerFrameBuffer.valid = true;
+
+                                finishFrame(valid);
+
+                                output('*');
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            if(current_field->id == IEBUS_FRAME_FIELD_BROADCAST_BIT)
+                            {
+                                check_acknowledgement = (bit == IEBUS_BIT_LOGIC_HIGH);
+                                frame_high_bit_count = 0;
+                            }
+                            else if(current_field->id == IEBUS_FRAME_FIELD_MESSAGE_LENGTH)
+                            {
+                                // 0 means maximum
+                                if(field_data_buffer == 0)
+                                {
+                                    field_data_buffer = IEBUS_FRAME_MESSAGE_LENGTH_FIELD_MAXIMUM_VALUE;
+                                }
+
+                                // ignore multi-frame data for now; should be okay since all relevant data are single frame
+                                if(field_data_buffer > IEBUS_FRAME_DATA_FIELD_MAXIMUM_LENGTH)
+                                {
+                                    finishFrame(tooLong);
+                                    continue;
+                                }
+
+                                remaining_bytes = field_data_buffer;
+                            }
+
+                            ++current_field;
+                        }
+
+                        // prepare to processing_frame the next field
+                        remaining_field_bits = current_field->totalBits;
+                        field_bit_mask = current_field->bitMask;
+                        field_data_buffer = 0;
+                    }
+                }
+            }
+        }
+        else
+        {
+            bits_buffer_end_index = BITS_BUFFER_SIZE - 1;
+            bits_buffer_end_mask = 0;
+            bits_buffer_end_count = 0;
+            bits_buffer_start_index = BITS_BUFFER_SIZE - 1;
+            bits_buffer_start_shift = 16;
+            bits_buffer_start_count = 0;
+            bits_buffer_not_full = true;
+        }
+    }
+    while(loop);
+}
+#if 0
 static void analyze_bits_buffer()
 {
+#if 1
+    analyze_bits(false);
+#else
     if(bits_buffer_end_mask == 0)
     {
         while(bits_buffer_start_index != bits_buffer_end_index)
@@ -155,8 +445,9 @@ static void analyze_bits_buffer()
             }
         }
     }
+#endif
 }
-
+#endif
 static void read_adc()
 {
     start_sampling();
@@ -238,11 +529,13 @@ static void read_adc()
 
                 bits_buffer_end_mask <<=2;
                 ++bits_buffer_end_count;
+#if 0
                 if(bits_buffer_end_mask == 0)
                 {
-                    analyze_bits_buffer();
+                    //analyze_bits_buffer();
                 }
                 //output(bits_buffer_end_mask);
+#endif
                 break;
             }
 
@@ -279,9 +572,9 @@ int main(void)
 
    while (1)
    {
-       //
-       __delay_cycles(1000); // Wait for ADC Ref to settle
+       //__delay_cycles(1000); // Wait for ADC Ref to settle
        read_adc();
+       analyze_bits(false);
        transmit_to_uart();
    }
 }
