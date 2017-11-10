@@ -24,9 +24,11 @@ static volatile uint16_t samples[ADC_CHANNELS];
 
 // convert to millivolts
 #define ADC_MILLIVOLT_MAX ((uint16_t)3500)
-#define ADC_VALUE_TO_MILLIVOLTS(adc_value) (uint16_t)(ADC_MILLIVOLT_MAX / ADC_MAX * (((float)(adc_value))))
-#define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE    120  // millivolts
+#define ADC_VALUE_TO_MILLIVOLTS(adc_value)  (uint16_t)(((float)(adc_value) / ADC_MAX) * ADC_MILLIVOLT_MAX)
+#define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE    300  // millivolts
 #define ADC_LOGIC_HIGH_MAXIMUM_DIFFERENCE   20  // millivolts
+
+#define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE_ADC    88  // ADC COUNT
 
 #define start_sampling() { \
     ADC10CTL0 &= ~ENC; \
@@ -58,6 +60,14 @@ void output16(const uint16_t data16)
     output((data16 >> 8) & 0xFF);
 }
 
+void output32(const uint32_t data32)
+{
+    output((data32 >> 0) & 0xFF);
+    output((data32 >> 8) & 0xFF);
+    output((data32 >> 16) & 0xFF);
+    output((data32 >> 24) & 0xFF);
+}
+
 static void transmit_to_uart(void)
 {
     while (!(IFG2 & UCA0TXIFG));
@@ -78,11 +88,11 @@ static void configure_adc(void)
 
    ADC10CTL1 = INCH_4/*4*/      // BIT 3 and BIT4
            + ADC10DIV_0         // ADC Clock divider = 1
-           + ADC10SSEL_0/*2*/   // Select the ADC10OSC as the source clock
-           + CONSEQ_3           // Repeat sequence of channels
+           + ADC10SSEL_3/*2*/   // Select SMCLK as the source clock
+           + CONSEQ_2           // Repeat single channel
            + SHS_0;             // Sample and hold source is ADC10SC
    ADC10CTL0 = SREF_0/*5*/      // VR+ = VCC and VR- = VSS
-           + ADC10SHT_0/*2*/    // Use four ADC10CLKs
+           + ADC10SHT_0         // Use four ADC10CLKs
            + MSC                // First rising edge triggers sampling timer, succeeding conversions are done automatically
            + ADC10ON            // Enable ADC10
            + ADC10IE;           // Interrupt enable
@@ -94,10 +104,19 @@ static void configure_hardware(void)
 {
     /* Configure the hardware */
     WDTCTL = WDTPW + WDTHOLD;   // Stop WDT
-    //DCOCTL = 0;                 // Select lowest DCOx and MODx settings
+    DCOCTL = 0;                 // Clear DCOx and MODx
+    BCSCTL2 = 0;                // MCLK = DCOCLK; MCLK DIV = 1
     BCSCTL1 = CALBC1_16MHZ;      // Set range // Set DC0
     DCOCTL = CALDCO_16MHZ;
-    BCSCTL2 &= ~(DIVS_3);       // SMCLK = DCO = 1MHz // from ADC
+    //BCSCTL2 &= ~(DIVS_3);       // SMCLK = DCO = 1MHz // from ADC
+    BCSCTL1 |= XT2OFF + DIVA_0; // XT2OFF -- Disable XT2CLK ; DIVA_0 -- divide by 1
+    /* Basic Clock System Control 3
+     * XT2S_0 -- 0.4 - 1 MHz
+     * LFXT1S_2 -- If XTS = 0, XT1 = VLOCLK ; If XTS = 1, XT1 = 3 - 16-MHz crystal or resonator
+     * XCAP_1 -- ~6 pF */
+    BCSCTL3 = XT2S_0 + LFXT1S_2 + XCAP_1; //
+
+
     P2DIR |= 0xFF;              // All P2.x outputs
     P2OUT &= 0x00;              // All P2.x reset
     P3DIR |= 0xFF;              // All P3.x outputs
@@ -118,18 +137,18 @@ static void configure_hardware(void)
 }
 
 // bits buffer
-#define BITS_BUFFER_SIZE     32
-static uint16_t bits_buffer[BITS_BUFFER_SIZE];
-static volatile uint8_t bits_buffer_end_index = BITS_BUFFER_SIZE - 1;
+#define BITS_BUFFER_SIZE    80
+static uint8_t bits_buffer[BITS_BUFFER_SIZE];
+static volatile uint32_t bits_buffer_end_index = BITS_BUFFER_SIZE - 1;
 static volatile uint16_t bits_buffer_end_mask = 0;
 static volatile uint8_t bits_buffer_end_count = 0;
 static volatile uint8_t bits_buffer_start_index = BITS_BUFFER_SIZE - 1;
-static volatile uint8_t bits_buffer_start_shift = 16;
+static volatile uint8_t bits_buffer_start_shift = 32;
 static volatile uint8_t bits_buffer_start_count = 0;
 static volatile bool bits_buffer_not_full = true;
 
 #define BUS_IDLE_HIGH_COUNT 100//100
-#define BUS_START_BIT_MINIMUM_LOW_COUNT      100//80
+#define BUS_START_BIT_MINIMUM_LOW_COUNT      80//80
 #define BUS_LOGIC_BIT_MINIMUM_LOW_COUNT      5//5
 #define BUS_LOGIC_HIGH_MAXIMUM_LOW_COUNT     15//15
 static volatile bool bus_is_busy = true;
@@ -170,9 +189,6 @@ enum {
 };
 
 static READER_FRAME_BUFFER readerFrameBuffer;
-//static const READER_FRAME_BUFFER *lastReaderFrameBuffer = &readerFrameBuffer[READER_FRAME_BUFFER_ITEMS - 1];
-//static READER_FRAME_BUFFER *readerFrameBufferEnd = readerFrameBuffer;
-//static READER_FRAME_BUFFER *readerFrameBufferStart = readerFrameBuffer;
 
 // IEBus address
 typedef int16_t IEBUS_ADDRESS;
@@ -246,7 +262,17 @@ static const IEBUS_FRAME_FIELD iebus_frame_field[] = {
         IEBUS_FRAME_FIELD_INITIALIZER(IEBUS_FRAME_FIELD_DATA, true, true, IEBUS_FRAME_FIELD_BITS_DATA)
 };
 
-void analyze_bits(bool loop)
+#define reset_counters() {\
+            bits_buffer_end_index = BITS_BUFFER_SIZE - 1;\
+            bits_buffer_end_mask = 0;\
+            bits_buffer_end_count = 0;\
+            bits_buffer_start_index = BITS_BUFFER_SIZE - 1;\
+            bits_buffer_start_shift = 32;\
+            bits_buffer_start_count = 0;\
+            bits_buffer_not_full = true;\
+}
+
+void analyze_bits(void)
 {
 #define finishFrame(reason) \
         { \
@@ -260,7 +286,7 @@ void analyze_bits(bool loop)
     static uint16_t field_bit_mask; // data bit mask for the current field
     static uint16_t field_data_buffer; // data buffer for the current field
     static uint16_t frame_high_bit_count; // frame high bit count (excluding the broadcast and acknowledge bits) for parity check
-    static uint16_t remaining_bytes; // number of remaining bytes to receive for the current frame
+    static uint32_t remaining_bytes; // number of remaining bytes to receive for the current frame
     static uint8_t *data;
 
     do
@@ -269,7 +295,7 @@ void analyze_bits(bool loop)
         {
             if(bits_buffer_end_count != bits_buffer_start_count)
             {
-                if(bits_buffer_start_shift < 14)
+                if(bits_buffer_start_shift < 30)
                 {
                     bits_buffer_start_shift += 2;
                 }
@@ -284,6 +310,7 @@ void analyze_bits(bool loop)
                 }
 
                 uint8_t bit = (bits_buffer[bits_buffer_start_index] >> bits_buffer_start_shift) & 0x3;
+                //output('0' + bit);
 
                 ++bits_buffer_start_count;
 
@@ -293,7 +320,7 @@ void analyze_bits(bool loop)
                     if(processing_frame)
                     {
                         //output('x');
-                        //output('x');
+                        output('x');
                         finishFrame(incomplete);
                     }
 
@@ -311,7 +338,7 @@ void analyze_bits(bool loop)
                 }
                 else if(processing_frame)
                 {
-                    output(bit);
+                    //output(bit);
                     // save the bit
                     if(bit == IEBUS_BIT_LOGIC_HIGH)
                     {
@@ -334,6 +361,7 @@ void analyze_bits(bool loop)
                                 if(check_acknowledgement)
                                 {
                                     finishFrame(notAcknowledged);
+                                    output('$');
                                     continue;
                                 }
                             }
@@ -345,6 +373,7 @@ void analyze_bits(bool loop)
                             if((frame_high_bit_count & 0x1))
                             {
                                 finishFrame(parityError);
+                                output('%');
 
                                 continue;
                             }
@@ -392,6 +421,7 @@ void analyze_bits(bool loop)
                                 if(field_data_buffer > IEBUS_FRAME_DATA_FIELD_MAXIMUM_LENGTH)
                                 {
                                     finishFrame(tooLong);
+                                    output('#');
                                     continue;
                                 }
 
@@ -411,21 +441,15 @@ void analyze_bits(bool loop)
         }
         else
         {
-            bits_buffer_end_index = BITS_BUFFER_SIZE - 1;
-            bits_buffer_end_mask = 0;
-            bits_buffer_end_count = 0;
-            bits_buffer_start_index = BITS_BUFFER_SIZE - 1;
-            bits_buffer_start_shift = 16;
-            bits_buffer_start_count = 0;
-            bits_buffer_not_full = true;
+            reset_counters();
         }
     }
-    while(loop);
+    while(0);
 }
 #if 0
 static void analyze_bits_buffer()
 {
-#if 1
+#if 0
     analyze_bits(false);
 #else
     if(bits_buffer_end_mask == 0)
@@ -436,8 +460,8 @@ static void analyze_bits_buffer()
             output('[');
             output(bits_buffer[bits_buffer_start_index]);
 #else
-            //output('[');
-            output16(bits_buffer[bits_buffer_start_index]);
+            output('[');
+            output32(bits_buffer[bits_buffer_start_index]);
 #endif
             if(++bits_buffer_start_index == BITS_BUFFER_SIZE)
             {
@@ -448,6 +472,8 @@ static void analyze_bits_buffer()
 #endif
 }
 #endif
+#define DEC_BUF_SIZE 5
+char dec_buf[DEC_BUF_SIZE];
 static void read_adc()
 {
     start_sampling();
@@ -455,17 +481,34 @@ static void read_adc()
 
     static volatile bool is_high = false;
     static volatile bool not_frame = true;
-    static uint16_t sample_count = 0;
+    static uint8_t sample_count = 0;
     //static bool process = false;
 
     //output('-');
 #define BUS_PLUS (ADC_VALUE_TO_MILLIVOLTS(samples[0]))
 #define BUS_MINUS (ADC_VALUE_TO_MILLIVOLTS(samples[1]))
-#define volt_diff ((BUS_PLUS > BUS_MINUS) ? BUS_PLUS - BUS_MINUS : BUS_MINUS - BUS_PLUS)
+//#define volt_diff ((samples[0] > samples[1]) ? ADC_VALUE_TO_MILLIVOLTS(samples[0] - samples[1]) \
+        : ADC_VALUE_TO_MILLIVOLTS(samples[1] - samples[0]))
+#define volt_diff ((samples[0] > samples[1]) ? samples[0] - samples[1] : samples[1] - samples[0])
+//#define volt_diff   (ADC_VALUE_TO_MILLIVOLTS(samples[0]))
     //output16(ADC_VALUE_TO_MILLIVOLTS(samples[0]));
-    //output16(volt_diff);
+    uint16_t volt_diff_v = volt_diff;
+#if 0
+    if(volt_diff_v > 120)
+    {
+        output('\n');
+        uint8_t sz = snprintf(dec_buf, DEC_BUF_SIZE, "%d", volt_diff_v);
+
+//        output16(volt_diff);
+        output_string(dec_buf, sz);
+    }
+#endif
 #if 1
-    if(volt_diff > ADC_LOGIC_LOW_MINIMUM_DIFFERENCE)
+    //static uint16_t max_volt_diff=0;
+    //if(volt_diff_v > max_volt_diff) max_volt_diff = volt_diff_v;
+    //output('&');
+    //output16(max_volt_diff);
+    if(volt_diff_v > ADC_LOGIC_LOW_MINIMUM_DIFFERENCE_ADC)
     {
         //output(0); //logic "0"
         if(is_high)
@@ -500,6 +543,7 @@ static void read_adc()
                         not_frame = true;
                         output('!');
                         output('!');
+                        reset_counters();
                         break;
                     }
 
@@ -512,7 +556,9 @@ static void read_adc()
                     //received++
                     bits_buffer[bits_buffer_end_index] |= (bits_buffer_end_mask << 1);
                     not_frame = false;
+                    //output16(volt_diff_v);
                     //output('@');
+                    //output16(sample_count);
                 }
                 else if(not_frame)
                 {
@@ -529,10 +575,11 @@ static void read_adc()
 
                 bits_buffer_end_mask <<=2;
                 ++bits_buffer_end_count;
-#if 0
+#if 1
                 if(bits_buffer_end_mask == 0)
                 {
-                    //analyze_bits_buffer();
+                    uint8_t loopcnt = 32;
+                    while(--loopcnt) analyze_bits();
                 }
                 //output(bits_buffer_end_mask);
 #endif
@@ -574,7 +621,8 @@ int main(void)
    {
        //__delay_cycles(1000); // Wait for ADC Ref to settle
        read_adc();
-       analyze_bits(false);
+       //analyze_bits_buffer();
+       //analyze_bits();
        transmit_to_uart();
    }
 }
