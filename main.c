@@ -28,7 +28,7 @@ static volatile uint16_t samples[ADC_CHANNELS];
 #define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE    300  // millivolts
 #define ADC_LOGIC_HIGH_MAXIMUM_DIFFERENCE   20  // millivolts
 
-#define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE_ADC    88  // ADC COUNT
+#define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE_ADC    70//88  // ADC COUNT
 
 #define start_sampling() { \
     ADC10CTL0 &= ~ENC; \
@@ -87,12 +87,12 @@ static void configure_adc(void)
    while (ADC10CTL1 & BUSY);
 
    ADC10CTL1 = INCH_4/*4*/      // BIT 3 and BIT4
-           + ADC10DIV_0         // ADC Clock divider = 1
-           + ADC10SSEL_3/*2*/   // Select SMCLK as the source clock
+           + ADC10DIV_1         // ADC Clock divider = 2
+           + ADC10SSEL_0/*2*/   // Select ADC10OSC as the source clock
            + CONSEQ_2           // Repeat single channel
            + SHS_0;             // Sample and hold source is ADC10SC
    ADC10CTL0 = SREF_0/*5*/      // VR+ = VCC and VR- = VSS
-           + ADC10SHT_0         // Use four ADC10CLKs
+           + ADC10SHT_3         // Use 64 ADC10CLKs
            + MSC                // First rising edge triggers sampling timer, succeeding conversions are done automatically
            + ADC10ON            // Enable ADC10
            + ADC10IE;           // Interrupt enable
@@ -220,9 +220,6 @@ enum {
     IEBUS_FRAME_FIELD_DATA
 };
 
-// maximum number of bits in a frame
-#define IEBUS_FRAME_MAXIMUM_NUMBER_OF_BITS          (45 + (10 * IEBUS_FRAME_DATA_FIELD_MAXIMUM_LENGTH))
-
 // number of bits (excluding parity and acknowledge) for each field
 #define IEBUS_FRAME_FIELD_BITS_BROADCAST_BIT        1
 #define IEBUS_FRAME_FIELD_BITS_MASTER_ADDRESS       12
@@ -272,6 +269,18 @@ static const IEBUS_FRAME_FIELD iebus_frame_field[] = {
             bits_buffer_not_full = true;\
 }
 
+// device addresses
+#define MAIN_CONTROLLER_ADDRESS             0x800
+#define BUTTON_ADDRESS                      0x880
+#define DISPLAY_ADDRESS_1                   0x8d2
+#define DISPLAY_ADDRESS_2                   0x901
+#define REMOTE_CONTROL_ADDRESS_1            0x8d0
+#define REMOTE_CONTROL_ADDRESS_2            0x932
+#define REMOTE_CONTROL_ADDRESS_3            0xb00
+#define deviceIsMainController(address)     (address == MAIN_CONTROLLER_ADDRESS)
+#define deviceIsButton(address)             (address >= BUTTON_ADDRESS)
+#define deviceIsDisplay(address)            (address == DISPLAY_ADDRESS_1 || address == DISPLAY_ADDRESS_2)
+
 void analyze_bits(void)
 {
 #define finishFrame(reason) \
@@ -320,7 +329,7 @@ void analyze_bits(void)
                     if(processing_frame)
                     {
                         //output('x');
-                        output('x');
+                        //output('x');
                         finishFrame(incomplete);
                     }
 
@@ -362,6 +371,8 @@ void analyze_bits(void)
                                 {
                                     finishFrame(notAcknowledged);
                                     output('$');
+                                    output(readerFrameBuffer.masterAddress[0]);
+                                    output(readerFrameBuffer.masterAddress[1]);
                                     continue;
                                 }
                             }
@@ -399,6 +410,8 @@ void analyze_bits(void)
                                 finishFrame(valid);
 
                                 output('*');
+                                output(readerFrameBuffer.masterAddress[0]);
+                                output(readerFrameBuffer.masterAddress[1]);
                                 continue;
                             }
                         }
@@ -422,6 +435,8 @@ void analyze_bits(void)
                                 {
                                     finishFrame(tooLong);
                                     output('#');
+                                    output(readerFrameBuffer.masterAddress[0]);
+                                    output(readerFrameBuffer.masterAddress[1]);
                                     continue;
                                 }
 
@@ -578,7 +593,7 @@ static void read_adc()
 #if 1
                 if(bits_buffer_end_mask == 0)
                 {
-                    uint8_t loopcnt = 32;
+                    uint8_t loopcnt = 64;
                     while(--loopcnt) analyze_bits();
                 }
                 //output(bits_buffer_end_mask);
