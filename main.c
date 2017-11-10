@@ -15,7 +15,7 @@
 
 //static volatile uint8_t value = 0;
 #define ADC_CHANNELS 2
-static volatile uint16_t samples[ADC_CHANNELS];
+static volatile int samples[ADC_CHANNELS];
 
 // maximum values
 #define ADC_RESOLUTION  10
@@ -28,12 +28,12 @@ static volatile uint16_t samples[ADC_CHANNELS];
 #define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE    300  // millivolts
 #define ADC_LOGIC_HIGH_MAXIMUM_DIFFERENCE   20  // millivolts
 
-#define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE_ADC    70//88  // ADC COUNT
+#define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE_ADC    70  //88// ADC COUNT
 
 #define start_sampling() { \
     ADC10CTL0 &= ~ENC; \
     while (ADC10CTL1 & BUSY); \
-    ADC10SA = (uint16_t)samples; \
+    ADC10SA = (int)samples; \
     ADC10CTL0 |= ENC | ADC10SC; \
 }
 
@@ -48,24 +48,28 @@ void output_string(const uint8_t *bytes, uint16_t length)
     }
 }
 
+#define output_raw(byte) {circularBuffer_pushByte(&uart_buffer, (byte));}
+
 void output(const uint8_t byte)
 {
-    circularBuffer_pushByte(&uart_buffer, byte);
+    output_raw(byte);
     enableTx();
 }
 
 void output16(const uint16_t data16)
 {
-    output((data16 >> 0) & 0xFF);
-    output((data16 >> 8) & 0xFF);
+    output_raw((data16 >> 0) & 0xFF);
+    output_raw((data16 >> 8) & 0xFF);
+    enableTx();
 }
 
 void output32(const uint32_t data32)
 {
-    output((data32 >> 0) & 0xFF);
-    output((data32 >> 8) & 0xFF);
-    output((data32 >> 16) & 0xFF);
-    output((data32 >> 24) & 0xFF);
+    output_raw((data32 >> 0) & 0xFF);
+    output_raw((data32 >> 8) & 0xFF);
+    output_raw((data32 >> 16) & 0xFF);
+    output_raw((data32 >> 24) & 0xFF);
+    enableTx();
 }
 
 static void transmit_to_uart(void)
@@ -487,12 +491,19 @@ static void analyze_bits_buffer()
 #endif
 }
 #endif
+
+
+#define print_decimal(d) {\
+        output('\n'); \
+        uint8_t sz = snprintf(dec_buf, DEC_BUF_SIZE, "%d", volt_diff_v); \
+        output_string(dec_buf, sz); \
+}
+
+
 #define DEC_BUF_SIZE 5
 char dec_buf[DEC_BUF_SIZE];
 static void read_adc()
 {
-    start_sampling();
-    __bis_SR_register(CPUOFF + GIE);
 
     static volatile bool is_high = false;
     static volatile bool not_frame = true;
@@ -504,25 +515,16 @@ static void read_adc()
 #define BUS_MINUS (ADC_VALUE_TO_MILLIVOLTS(samples[1]))
 //#define volt_diff ((samples[0] > samples[1]) ? ADC_VALUE_TO_MILLIVOLTS(samples[0] - samples[1]) \
         : ADC_VALUE_TO_MILLIVOLTS(samples[1] - samples[0]))
-#define volt_diff ((samples[0] > samples[1]) ? samples[0] - samples[1] : samples[1] - samples[0])
+#define volt_diff (int)((int)samples[0] - (int)samples[1]) //((samples[0] > samples[1]) ? samples[0] - samples[1] : 0)
 //#define volt_diff   (ADC_VALUE_TO_MILLIVOLTS(samples[0]))
     //output16(ADC_VALUE_TO_MILLIVOLTS(samples[0]));
-    uint16_t volt_diff_v = volt_diff;
-#if 0
-    if(volt_diff_v > 120)
-    {
-        output('\n');
-        uint8_t sz = snprintf(dec_buf, DEC_BUF_SIZE, "%d", volt_diff_v);
-
-//        output16(volt_diff);
-        output_string(dec_buf, sz);
-    }
-#endif
+    int volt_diff_v = volt_diff;
 #if 1
     //static uint16_t max_volt_diff=0;
     //if(volt_diff_v > max_volt_diff) max_volt_diff = volt_diff_v;
     //output('&');
-    //output16(max_volt_diff);
+    //output16(volt_diff_v);
+    //print_decimal(volt_diff_v);
     if(volt_diff_v > ADC_LOGIC_LOW_MINIMUM_DIFFERENCE_ADC)
     {
         //output(0); //logic "0"
@@ -635,6 +637,8 @@ int main(void)
    while (1)
    {
        //__delay_cycles(1000); // Wait for ADC Ref to settle
+       start_sampling();
+       __bis_SR_register(CPUOFF + GIE);
        read_adc();
        //analyze_bits_buffer();
        //analyze_bits();
