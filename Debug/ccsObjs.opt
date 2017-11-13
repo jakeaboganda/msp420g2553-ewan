@@ -1,1 +1,1 @@
-"./circular_buffer.obj" "./main.obj" "../lnk_msp430g2553.cmd" -llibc.a 
+"./main.obj" "../lnk_msp430g2553.cmd" -llibc.a 
