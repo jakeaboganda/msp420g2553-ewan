@@ -23,9 +23,16 @@ typedef volatile struct {
 
 #define CIRCULAR_BUFFER_INIT {0, 0}
 
-bool circularBuffer_isEmpty(circular_buffer_t *cbuffer);
-bool circularBuffer_pushByte(circular_buffer_t *cbuffer, uint8_t byte);
-uint8_t circularBuffer_popByte(circular_buffer_t *cbuffer);
-
+#define circularBuffer_isEmpty(cbuffer) (((cbuffer)->start == (cbuffer)->end))
+#define circularBuffer_popByte(cbuffer) ((cbuffer)->buffer[(cbuffer)->start++])
+#define circularBuffer_pushByte(cbuffer, byte) \
+{ \
+    (cbuffer)->buffer[(cbuffer)->end] = byte; \
+    (cbuffer)->end = (cbuffer)->end + 1; \
+    if(circularBuffer_isEmpty((cbuffer))) \
+    { \
+        (cbuffer)->start++; \
+    } \
+}
 
 #endif /* CIRCULAR_BUFFER_H_ */
