@@ -10,7 +10,6 @@ GEN_OPTS__FLAG :=
 GEN_CMDS__FLAG := 
 
 ORDERED_OBJS += \
-"./circular_buffer.obj" \
 "./main.obj" \
 "../lnk_msp430g2553.cmd" \
 $(GEN_CMDS__FLAG) \
@@ -153,8 +152,8 @@ msp420g2553-ewan.hex: $(EXE_OUTPUTS)
 # Other Targets
 clean:
 	-$(RM) $(EXE_OUTPUTS__QUOTED)$(BIN_OUTPUTS__QUOTED)
-	-$(RM) "circular_buffer.d" "main.d" 
-	-$(RM) "circular_buffer.obj" "main.obj" 
+	-$(RM) "main.d" 
+	-$(RM) "main.obj" 
 	-@echo 'Finished clean'
 	-@echo ' '
 
