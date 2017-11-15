@@ -28,7 +28,7 @@ static int samples[ADC_CHANNELS];
 #define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE    300  // millivolts
 #define ADC_LOGIC_HIGH_MAXIMUM_DIFFERENCE   20  // millivolts
 
-#define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE_ADC    93//88// ADC COUNT 88 = 300 * 1023 / 3500
+#define ADC_LOGIC_LOW_MINIMUM_DIFFERENCE_ADC    88//88// ADC COUNT 88 = 300 * 1023 / 3500
 
 #define start_sampling() { \
     ADC10CTL0 &= ~ENC; \
@@ -44,18 +44,25 @@ uint8_t *output_string_p;
     while(length--) circularBuffer_pushByte(&uart_buffer, *(output_string_p++)); \
 }
 
-#define output_raw(byte) {circularBuffer_pushByte(&uart_buffer, (byte));}
+#define output_raw(byte) {circularBuffer_pushByte(&uart_buffer, (uint8_t)(byte));}
 #define shift_byte(bits, byte_to_shift) ((uint8_t)((byte_to_shift >> bits) & 0xFF))
 #define output(d8) {output_raw(d8);}
+#if 0
 #define output16(d16) { \
-    output_raw(((uint16_t*)(d16))[0]); \
-    output_raw(((uint16_t*)(d16))[1]); \
+    output_raw(((uint8_t*)(&d16))[0]); \
+    output_raw(((uint8_t*)(&d16))[1]); \
 }
-#define output32(d16) { \
-    output_raw(((uint32_t*)(d32))[0]); \
-    output_raw(((uint32_t*)(d32))[1]); \
-    output_raw(((uint32_t*)(d32))[2]); \
-    output_raw(((uint32_t*)(d32))[3]); \
+#else
+#define output16(d16) { \
+        output_raw(((d16) >> 0)&0xff); \
+        output_raw(((d16) >> 8)&0xff); \
+}
+#endif
+#define output32(d32) { \
+    output_raw(((uint8_t*)(&d32))[0]); \
+    output_raw(((uint8_t*)(&d32))[1]); \
+    output_raw(((uint8_t*)(&d32))[2]); \
+    output_raw(((uint8_t*)(&d32))[3]); \
 }
 #if 0
 static void transmit_to_uart(void)
@@ -142,22 +149,22 @@ static void configure_hardware(void)
 }
 
 // bits buffer
-#define BITS_BUFFER_SIZE    60
-static uint8_t bits_buffer[BITS_BUFFER_SIZE];
+#define BITS_BUFFER_SIZE    20
+static uint32_t bits_buffer[BITS_BUFFER_SIZE];
 static volatile uint8_t bits_buffer_end_index = BITS_BUFFER_SIZE - 1;
 static volatile uint8_t bits_buffer_end_count = 0;
 static volatile uint8_t bits_buffer_start_index = BITS_BUFFER_SIZE - 1;
 static volatile uint16_t bits_buffer_end_mask = 0;
-static volatile uint8_t bits_buffer_start_shift = 8;
+static volatile uint8_t bits_buffer_start_shift = 32;
 static volatile uint8_t bits_buffer_start_count = 0;
 static volatile bool bits_buffer_not_full = true;
 
 #define bits_buffer_length ((bits_buffer_start_index < bits_buffer_end_index) ? (bits_buffer_end_index - bits_buffer_start_index) : (BITS_BUFFER_SIZE - bits_buffer_start_index + bits_buffer_end_index))
 
-#define BUS_IDLE_HIGH_COUNT 300//100
-#define BUS_START_BIT_MINIMUM_LOW_COUNT      240//80
-#define BUS_LOGIC_BIT_MINIMUM_LOW_COUNT      15//5
-#define BUS_LOGIC_HIGH_MAXIMUM_LOW_COUNT     45//15
+#define BUS_IDLE_HIGH_COUNT 200//100
+#define BUS_START_BIT_MINIMUM_LOW_COUNT      160//80
+#define BUS_LOGIC_BIT_MINIMUM_LOW_COUNT      10//5
+#define BUS_LOGIC_HIGH_MAXIMUM_LOW_COUNT     30//15
 static volatile bool bus_is_busy = true;
 
 
@@ -271,7 +278,7 @@ static const IEBUS_FRAME_FIELD iebus_frame_field[] = {
             bits_buffer_end_mask = 0;\
             bits_buffer_end_count = 0;\
             bits_buffer_start_index = BITS_BUFFER_SIZE - 1;\
-            bits_buffer_start_shift = 8;\
+            bits_buffer_start_shift = 32;\
             bits_buffer_start_count = 0;\
             bits_buffer_not_full = true;\
 }
@@ -313,15 +320,16 @@ void analyze_bits(void)
     static uint32_t remaining_bytes; // number of remaining bytes to receive for the current frame
     static uint8_t *data;
 
-    if(bits_buffer_length < 1) return;
+    //if(bits_buffer_length < 1) return;
 
-    while(bits_buffer_end_count != bits_buffer_start_count)
+    //while(bits_buffer_end_count != bits_buffer_start_count)
+    while(true)
     {
-        //if(bits_buffer_not_full)
-        //{
+        if(bits_buffer_not_full)
+        {
             if(bits_buffer_end_count != bits_buffer_start_count)
             {
-                if(bits_buffer_start_shift < 6)
+                if(bits_buffer_start_shift < 30)
                 {
                     bits_buffer_start_shift += 2;
                 }
@@ -498,11 +506,12 @@ void analyze_bits(void)
                     }
                 }
             }
-        //}
-        //else
-        //{
-        //    reset_counters();
-        //}
+        }
+        else
+        {
+            reset_counters();
+        }
+        break;
     }
 }
 
@@ -518,6 +527,7 @@ int dec_val;
         ixx = DEC_BUF_SIZE;output_string(dec_buf, ixx); \
 }
 #endif
+#define OUTPUT_BITS_RAW
 int main(void)
 {
     configure_hardware();
@@ -531,14 +541,25 @@ int main(void)
        //__delay_cycles(1000); // Wait for ADC Ref to settle
        start_sampling();
        __bis_SR_register(CPUOFF + GIE);
-       analyze_bits();
+       //analyze_bits();
        enableTx();
    }
 }
-
+#define LIGHT_UP
 #pragma vector=ADC10_VECTOR
 __interrupt void ADC10_ISR (void)
 {
+#ifdef LIGHT_UP
+    static bool light = true;
+    if(light)
+    {
+        P1OUT |= TXLED;
+    } else
+    {
+        P1OUT &= ~TXLED;
+    }
+    light = !light;
+#endif
 
     static volatile bool is_high = false;
     static volatile bool not_frame = true;
@@ -550,6 +571,7 @@ __interrupt void ADC10_ISR (void)
     //output16(samples[1]);
     if(volt_diff > ADC_LOGIC_LOW_MINIMUM_DIFFERENCE_ADC)
     {
+        //output('0');
         if(is_high)
         {
             sample_count++;
@@ -592,6 +614,9 @@ __interrupt void ADC10_ISR (void)
 
                 if(sample_count > BUS_START_BIT_MINIMUM_LOW_COUNT)
                 {
+#ifdef OUTPUT_BITS_RAW
+                    output(2);
+#endif
                     //received++
                     bits_buffer[bits_buffer_end_index] |= (bits_buffer_end_mask << 1);
                     not_frame = false;
@@ -608,7 +633,16 @@ __interrupt void ADC10_ISR (void)
                     {
                         break;
                     }
+#ifdef OUTPUT_BITS_RAW
+                    output(1);
+#endif
                     bits_buffer[bits_buffer_end_index] |= bits_buffer_end_mask;
+                }
+                else
+                {
+#ifdef OUTPUT_BITS_RAW
+                    output(0);
+#endif
                 }
 
                 bits_buffer_end_mask <<=2;
@@ -622,6 +656,7 @@ __interrupt void ADC10_ISR (void)
     }
     else
     {
+        //output('1');
         bus_is_busy = true;
 
         if(is_high)
@@ -641,7 +676,7 @@ __interrupt void ADC10_ISR (void)
 #pragma vector=USCIAB0TX_VECTOR
 __interrupt void USCI0TX_ISR(void)
 {
-    P1OUT |= TXLED;
+    //P1OUT |= TXLED;
 #if 1
     if(!circularBuffer_isEmpty(&uart_buffer))
     {
@@ -652,7 +687,7 @@ __interrupt void USCI0TX_ISR(void)
         disableTx();
     }
 #endif
-    P1OUT &= ~TXLED;
+    //P1OUT &= ~TXLED;
 }
 
 #pragma vector=USCIAB0RX_VECTOR
